@@ -14,6 +14,14 @@ async function request<T>(
     ...options,
   });
 
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const hint = API_BASE
+      ? `Unexpected response from ${API_BASE}${path}.`
+      : "Admin is calling its own domain for /api. Set VITE_API_URL to your API server and rebuild.";
+    throw new Error(hint);
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Request failed: ${res.status}`);
@@ -25,8 +33,10 @@ async function request<T>(
 export type Settings = {
   remedialReleased: boolean;
   entranceReleased: boolean;
-  channelLink: string;
-  channelChatId: string;
+  remedialChannelLink: string;
+  entranceChannelLink: string;
+  remedialChannelChatId: string;
+  entranceChannelChatId: string;
   remedialUrl: string;
   entranceUrl: string;
   preReleaseMessage: string;
@@ -82,10 +92,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  testChannel: () =>
+  testChannel: (type: "remedial" | "entrance") =>
     request<{ ok: boolean; message: string; botIsAdmin: boolean }>(
       "/api/settings/test-channel",
-      { method: "POST" }
+      { method: "POST", body: JSON.stringify({ type }) }
     ),
 
   getAnalytics: () => request<Analytics>("/api/analytics"),

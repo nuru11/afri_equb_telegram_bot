@@ -111,7 +111,7 @@ export function BroadcastPage() {
               style={{ width: `${activeStatus.progress}%` }}
             />
           </div>
-          <p style={{ fontSize: "0.85rem", color: "#666" }}>
+          <p className="progress-stats">
             Sent: {activeStatus.sent} | Failed: {activeStatus.failed} | Total:{" "}
             {activeStatus.total}
           </p>

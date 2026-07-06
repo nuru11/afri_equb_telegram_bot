@@ -78,6 +78,8 @@ URL-encode special characters in the MySQL password (`{` → `%7B`, `}` → `%7D
 
 ### 1. Build admin locally
 
+**Same domain as API** (admin served from `public/` on the Node app):
+
 ```bash
 cd admin
 npm install
@@ -85,7 +87,27 @@ npm run build
 cd ..
 ```
 
-This writes static files to `public/`.
+**Separate admin subdomain** (e.g. `botpanel.entrancetricks.com` → API at `resultbotapi.entrancetricks.com`):
+
+```bash
+cd admin
+npm install
+# admin/.env.production must set VITE_API_URL=https://resultbotapi.entrancetricks.com
+npm run build
+cd ..
+```
+
+Upload the contents of `admin/dist/` to the admin subdomain document root.
+
+On the **API server**, set in cPanel environment variables:
+
+```env
+ADMIN_ORIGIN=http://botpanel.entrancetricks.com
+```
+
+(`server.js` accepts both `http://` and `https://` for the admin origin.)
+
+This writes static files to `admin/dist/` (or `public/` if you copy them for same-origin hosting).
 
 ### 2. Upload these files/folders
 
@@ -117,6 +139,7 @@ JWT_SECRET=...
 NODE_ENV=production
 PORT=3000
 WEBHOOK_URL=https://resultbotapi.entrancetricks.com
+ADMIN_ORIGIN=http://botpanel.entrancetricks.com
 ```
 
 For webhook mode, set `WEBHOOK_URL` to your app’s public HTTPS URL (no trailing path). The bot registers `/webhook` automatically.
@@ -128,23 +151,23 @@ For webhook mode, set `WEBHOOK_URL` to your app’s public HTTPS URL (no trailin
 
 ## Channel setup
 
-1. Create your official Telegram channel.
-2. Add the bot as a **channel administrator** (recommended for automatic membership checks).
-3. In the admin **Settings** page, set **Channel Link** and **Channel Chat ID** (`@yourchannel` or numeric ID).
-4. Click **Test Channel Connection**.
+1. Create your official Telegram channels (one for remedial, one for entrance).
+2. Add the bot as a **channel administrator** on both channels (recommended for automatic membership checks).
+3. In the admin **Settings** page, set **Remedial Channel** and **Entrance Channel** link + chat ID separately (`@yourchannel` or numeric ID).
+4. Click **Test Remedial Channel** and **Test Entrance Channel** to verify each connection.
 
-If the bot is not an admin, users can still verify by forwarding a channel post to the bot.
+Users must join the relevant channel for each result type. If the bot is not an admin, users can still verify by forwarding a channel post to the bot.
 
 ## Bot user flow
 
 1. `/start` → main menu (Remedial / Entrance)
 2. User selects a result type → channel membership check
-3. Not joined → join prompt + **Joined ✅**
+3. Not joined → join prompt for that result's channel + **Joined ✅**
 4. Joined → pre-release message, or result URL when released
 
 ## Admin dashboard
 
-- **Settings** — release flags, channel, result URLs, messages
+- **Settings** — release flags, remedial/entrance channels, result URLs, messages
 - **Analytics** — users and click counts
 - **Broadcast** — send a message (and optional photo URL) to all active users (in-process, no Redis)
 

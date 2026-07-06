@@ -6,7 +6,8 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [testing, setTesting] = useState(false);
+  const [testingRemedial, setTestingRemedial] = useState(false);
+  const [testingEntrance, setTestingEntrance] = useState(false);
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch((e) => setError(e.message));
@@ -29,12 +30,13 @@ export function SettingsPage() {
     }
   }
 
-  async function handleTestChannel() {
+  async function handleTestChannel(type: "remedial" | "entrance") {
+    const setTesting = type === "remedial" ? setTestingRemedial : setTestingEntrance;
     setTesting(true);
     setMessage("");
     setError("");
     try {
-      const result = await api.testChannel();
+      const result = await api.testChannel(type);
       setMessage(result.message);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Channel test failed");
@@ -82,35 +84,76 @@ export function SettingsPage() {
 
         <div className="card">
           <h2>Channel & Links</h2>
+
+          <h3>Remedial Channel</h3>
           <div className="form-group">
-            <label htmlFor="channelLink">Telegram Channel Link</label>
+            <label htmlFor="remedialChannelLink">Telegram Channel Link</label>
             <input
-              id="channelLink"
+              id="remedialChannelLink"
               type="url"
-              value={settings.channelLink}
-              onChange={(e) => setSettings({ ...settings, channelLink: e.target.value })}
-              placeholder="https://t.me/yourchannel"
+              value={settings.remedialChannelLink}
+              onChange={(e) =>
+                setSettings({ ...settings, remedialChannelLink: e.target.value })
+              }
+              placeholder="https://t.me/your-remedial-channel"
             />
           </div>
           <div className="form-group">
-            <label htmlFor="channelChatId">Channel Chat ID</label>
+            <label htmlFor="remedialChannelChatId">Channel Chat ID</label>
             <input
-              id="channelChatId"
+              id="remedialChannelChatId"
               type="text"
-              value={settings.channelChatId}
-              onChange={(e) => setSettings({ ...settings, channelChatId: e.target.value })}
-              placeholder="@yourchannel or -1001234567890"
+              value={settings.remedialChannelChatId}
+              onChange={(e) =>
+                setSettings({ ...settings, remedialChannelChatId: e.target.value })
+              }
+              placeholder="@your-remedial-channel or -1001234567890"
             />
           </div>
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={handleTestChannel}
-            disabled={testing}
+            onClick={() => handleTestChannel("remedial")}
+            disabled={testingRemedial}
           >
-            {testing ? "Testing..." : "Test Channel Connection"}
+            {testingRemedial ? "Testing..." : "Test Remedial Channel"}
           </button>
-          <div className="form-group" style={{ marginTop: "1rem" }}>
+
+          <h3 style={{ marginTop: "1.5rem" }}>Entrance Channel</h3>
+          <div className="form-group">
+            <label htmlFor="entranceChannelLink">Telegram Channel Link</label>
+            <input
+              id="entranceChannelLink"
+              type="url"
+              value={settings.entranceChannelLink}
+              onChange={(e) =>
+                setSettings({ ...settings, entranceChannelLink: e.target.value })
+              }
+              placeholder="https://t.me/your-entrance-channel"
+            />
+          </div>
+          <div className="form-group">
+            <label htmlFor="entranceChannelChatId">Channel Chat ID</label>
+            <input
+              id="entranceChannelChatId"
+              type="text"
+              value={settings.entranceChannelChatId}
+              onChange={(e) =>
+                setSettings({ ...settings, entranceChannelChatId: e.target.value })
+              }
+              placeholder="@your-entrance-channel or -1001234567890"
+            />
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => handleTestChannel("entrance")}
+            disabled={testingEntrance}
+          >
+            {testingEntrance ? "Testing..." : "Test Entrance Channel"}
+          </button>
+
+          <div className="form-group" style={{ marginTop: "1.5rem" }}>
             <label htmlFor="remedialUrl">Official Remedial Result URL</label>
             <input
               id="remedialUrl"

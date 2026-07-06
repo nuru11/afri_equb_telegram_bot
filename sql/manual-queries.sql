@@ -14,8 +14,10 @@ WHERE `id` = 'default';
 -- ---------------------------------------------------------------------------
 UPDATE `Settings`
 SET
-  `channelLink` = 'https://t.me/yourchannel',
-  `channelChatId` = '@yourchannel',
+  `remedialChannelLink` = 'https://t.me/your-remedial-channel',
+  `entranceChannelLink` = 'https://t.me/your-entrance-channel',
+  `remedialChannelChatId` = '@your-remedial-channel',
+  `entranceChannelChatId` = '@your-entrance-channel',
   `remedialUrl` = 'https://example.com/remedial',
   `entranceUrl` = 'https://example.com/entrance'
 WHERE `id` = 'default';

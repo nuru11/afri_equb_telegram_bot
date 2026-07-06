@@ -131,8 +131,10 @@ function databaseErrorMessage() {
 const DEFAULT_SETTINGS = {
   remedialReleased: false,
   entranceReleased: false,
-  channelLink: "",
-  channelChatId: "",
+  remedialChannelLink: "",
+  entranceChannelLink: "",
+  remedialChannelChatId: "",
+  entranceChannelChatId: "",
   remedialUrl: "",
   entranceUrl: "",
   preReleaseMessage: "Your result will be released soon.",
@@ -140,13 +142,28 @@ const DEFAULT_SETTINGS = {
     "Thank you for joining our channel! You can now check your result using the link below.",
 };
 
+function getChannelConfig(settings, type) {
+  if (type === "remedial") {
+    return {
+      link: settings.remedialChannelLink,
+      chatId: settings.remedialChannelChatId,
+    };
+  }
+  return {
+    link: settings.entranceChannelLink,
+    chatId: settings.entranceChannelChatId,
+  };
+}
+
 function mapSettings(row) {
   if (!row) return { ...DEFAULT_SETTINGS };
   return {
     remedialReleased: !!row.remedialReleased,
     entranceReleased: !!row.entranceReleased,
-    channelLink: row.channelLink || "",
-    channelChatId: row.channelChatId || "",
+    remedialChannelLink: row.remedialChannelLink || "",
+    entranceChannelLink: row.entranceChannelLink || "",
+    remedialChannelChatId: row.remedialChannelChatId || "",
+    entranceChannelChatId: row.entranceChannelChatId || "",
     remedialUrl: row.remedialUrl || "",
     entranceUrl: row.entranceUrl || "",
     preReleaseMessage: row.preReleaseMessage || DEFAULT_SETTINGS.preReleaseMessage,
@@ -159,9 +176,11 @@ async function getSettings() {
   if (!rows.length) {
     await pool.query(
       `INSERT INTO \`Settings\` (
-        \`id\`, \`remedialReleased\`, \`entranceReleased\`, \`channelLink\`, \`channelChatId\`,
+        \`id\`, \`remedialReleased\`, \`entranceReleased\`,
+        \`remedialChannelLink\`, \`entranceChannelLink\`,
+        \`remedialChannelChatId\`, \`entranceChannelChatId\`,
         \`remedialUrl\`, \`entranceUrl\`, \`preReleaseMessage\`, \`postActionMessage\`
-      ) VALUES ('default', 0, 0, '', '', '', '', ?, ?)
+      ) VALUES ('default', 0, 0, '', '', '', '', '', '', ?, ?)
       ON DUPLICATE KEY UPDATE \`id\` = \`id\``,
       [DEFAULT_SETTINGS.preReleaseMessage, DEFAULT_SETTINGS.postActionMessage]
     );
@@ -177,8 +196,10 @@ async function updateSettings(data) {
     `UPDATE \`Settings\` SET
       \`remedialReleased\` = ?,
       \`entranceReleased\` = ?,
-      \`channelLink\` = ?,
-      \`channelChatId\` = ?,
+      \`remedialChannelLink\` = ?,
+      \`entranceChannelLink\` = ?,
+      \`remedialChannelChatId\` = ?,
+      \`entranceChannelChatId\` = ?,
       \`remedialUrl\` = ?,
       \`entranceUrl\` = ?,
       \`preReleaseMessage\` = ?,
@@ -187,8 +208,10 @@ async function updateSettings(data) {
     [
       next.remedialReleased ? 1 : 0,
       next.entranceReleased ? 1 : 0,
-      next.channelLink,
-      next.channelChatId,
+      next.remedialChannelLink,
+      next.entranceChannelLink,
+      next.remedialChannelChatId,
+      next.entranceChannelChatId,
       next.remedialUrl,
       next.entranceUrl,
       next.preReleaseMessage,
@@ -258,16 +281,20 @@ async function trackUser(ctx, next) {
   await next();
 }
 
-async function isUserChannelVerified(telegramId) {
+async function isUserChannelVerified(telegramId, type) {
+  const column =
+    type === "remedial" ? "remedialChannelVerified" : "entranceChannelVerified";
   const [rows] = await pool.query(
-    "SELECT `channelVerified` FROM `User` WHERE `telegramId` = ? LIMIT 1",
+    `SELECT \`${column}\` AS verified FROM \`User\` WHERE \`telegramId\` = ? LIMIT 1`,
     [telegramId]
   );
-  return rows.length ? !!rows[0].channelVerified : false;
+  return rows.length ? !!rows[0].verified : false;
 }
 
-async function markUserChannelVerified(telegramId) {
-  await pool.query("UPDATE `User` SET `channelVerified` = 1 WHERE `telegramId` = ?", [
+async function markUserChannelVerified(telegramId, type) {
+  const column =
+    type === "remedial" ? "remedialChannelVerified" : "entranceChannelVerified";
+  await pool.query(`UPDATE \`User\` SET \`${column}\` = 1 WHERE \`telegramId\` = ?`, [
     telegramId,
   ]);
 }
@@ -284,11 +311,15 @@ function channelIdMatches(configuredChatId, chat) {
 
 async function verifyForwardedChannelPost(telegramId, chat) {
   const settings = await getSettings();
-  if (!channelIdMatches(settings.channelChatId, chat)) {
-    return false;
+  if (channelIdMatches(settings.remedialChannelChatId, chat)) {
+    await markUserChannelVerified(telegramId, "remedial");
+    return "remedial";
   }
-  await markUserChannelVerified(telegramId);
-  return true;
+  if (channelIdMatches(settings.entranceChannelChatId, chat)) {
+    await markUserChannelVerified(telegramId, "entrance");
+    return "entrance";
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,19 +328,18 @@ async function verifyForwardedChannelPost(telegramId, chat) {
 
 const JOINED_STATUSES = new Set(["member", "administrator", "creator", "restricted"]);
 
-async function checkChannelMembershipDetailed(api, userId, channelChatId) {
-  const chatId = channelChatId ?? (await getSettings()).channelChatId;
-  if (!chatId) {
-    log("warn", "channelChatId not configured");
+async function checkChannelMembershipDetailed(api, userId, channelChatId, type) {
+  if (!channelChatId) {
+    log("warn", "channelChatId not configured", { type });
     return { joined: false, reason: "not_configured" };
   }
 
-  if (await isUserChannelVerified(userId)) {
+  if (await isUserChannelVerified(userId, type)) {
     return { joined: true };
   }
 
   try {
-    const member = await api.getChatMember(chatId, userId);
+    const member = await api.getChatMember(channelChatId, userId);
     if (JOINED_STATUSES.has(member.status)) {
       return { joined: true };
     }
@@ -318,12 +348,16 @@ async function checkChannelMembershipDetailed(api, userId, channelChatId) {
     if (error instanceof GrammyError) {
       const desc = error.description ?? "";
       if (desc.includes("chat not found") || desc.includes("CHAT_ID_INVALID")) {
-        log("error", "getChatMember: bot cannot access channel", { chatId, userId, description: desc });
+        log("error", "getChatMember: bot cannot access channel", {
+          chatId: channelChatId,
+          userId,
+          description: desc,
+        });
         return { joined: false, reason: "bot_not_in_channel" };
       }
       if (desc.includes("member list is inaccessible")) {
         log("warn", "getChatMember: bot is not channel admin — use forward verification", {
-          chatId,
+          chatId: channelChatId,
           userId,
         });
         return { joined: false, reason: "bot_needs_admin" };
@@ -334,17 +368,18 @@ async function checkChannelMembershipDetailed(api, userId, channelChatId) {
     }
     log("error", "getChatMember failed", {
       error: error instanceof Error ? error.message : String(error),
-      chatId,
+      chatId: channelChatId,
       userId,
     });
     return { joined: false, reason: "error" };
   }
 }
 
-async function checkChannelMembershipWithReason(ctx) {
+async function checkChannelMembershipWithReason(ctx, type) {
   if (!ctx.from) return { joined: false, reason: "error" };
   const settings = await getSettings();
-  return checkChannelMembershipDetailed(ctx.api, ctx.from.id, settings.channelChatId);
+  const { chatId } = getChannelConfig(settings, type);
+  return checkChannelMembershipDetailed(ctx.api, ctx.from.id, chatId, type);
 }
 
 // ---------------------------------------------------------------------------
@@ -425,12 +460,13 @@ async function sendResultResponse(ctx, type, settings) {
 
 async function handleResultFlow(ctx, type, joinedCallback) {
   const settings = await getSettings();
-  const check = await checkChannelMembershipWithReason(ctx);
+  const { link } = getChannelConfig(settings, type);
+  const check = await checkChannelMembershipWithReason(ctx, type);
 
   if (!check.joined) {
     const text = check.reason === "not_member" ? JOIN_MESSAGE : membershipMessage(check.reason);
     await ctx.reply(text, {
-      reply_markup: joinChannelKeyboard(settings.channelLink, joinedCallback),
+      reply_markup: joinChannelKeyboard(link, joinedCallback),
     });
     return;
   }
@@ -440,12 +476,13 @@ async function handleResultFlow(ctx, type, joinedCallback) {
 
 async function handleJoinedConfirmation(ctx, type, joinedCallback) {
   await ctx.answerCallbackQuery();
-  const check = await checkChannelMembershipWithReason(ctx);
   const settings = await getSettings();
+  const { link } = getChannelConfig(settings, type);
+  const check = await checkChannelMembershipWithReason(ctx, type);
 
   if (!check.joined) {
     await ctx.reply(membershipMessage(check.reason), {
-      reply_markup: joinChannelKeyboard(settings.channelLink, joinedCallback),
+      reply_markup: joinChannelKeyboard(link, joinedCallback),
     });
     return;
   }
@@ -476,8 +513,8 @@ async function handleChannelForward(ctx) {
   const origin = ctx.message.forward_origin;
   if (origin?.type !== "channel") return;
 
-  const verified = await verifyForwardedChannelPost(ctx.from.id, origin.chat);
-  if (!verified) {
+  const verifiedType = await verifyForwardedChannelPost(ctx.from.id, origin.chat);
+  if (!verifiedType) {
     await ctx.reply(
       "This forward is not from our official channel. Please forward a post from the channel you joined.",
       { reply_markup: mainMenuKeyboard() }
@@ -485,8 +522,9 @@ async function handleChannelForward(ctx) {
     return;
   }
 
+  const label = verifiedType === "remedial" ? "Remedial" : "Entrance";
   await ctx.reply(
-    "Channel membership verified! Return to the main menu and tap your result button again.",
+    `${label} channel membership verified! Return to the main menu and tap your result button again.`,
     { reply_markup: mainMenuKeyboard() }
   );
 }
@@ -761,8 +799,10 @@ async function createApiServer(bot) {
     const allowed = [
       "remedialReleased",
       "entranceReleased",
-      "channelLink",
-      "channelChatId",
+      "remedialChannelLink",
+      "entranceChannelLink",
+      "remedialChannelChatId",
+      "entranceChannelChatId",
       "remedialUrl",
       "entranceUrl",
       "preReleaseMessage",
@@ -778,32 +818,34 @@ async function createApiServer(bot) {
     return updateSettings(data);
   });
 
-  app.post("/api/settings/test-channel", { preHandler: requireAuth }, async (_request, reply) => {
+  app.post("/api/settings/test-channel", { preHandler: requireAuth }, async (request, reply) => {
+    const body = request.body || {};
+    const type = body.type === "entrance" ? "entrance" : "remedial";
     const settings = await getSettings();
-    if (!settings.channelChatId) {
-      return reply.status(400).send({ error: "Channel chat ID is not configured" });
+    const { chatId } = getChannelConfig(settings, type);
+    const label = type === "remedial" ? "Remedial" : "Entrance";
+
+    if (!chatId) {
+      return reply.status(400).send({ error: `${label} channel chat ID is not configured` });
     }
 
     try {
-      const chat = await bot.api.getChat(settings.channelChatId);
-      const botMember = await bot.api.getChatMember(
-        settings.channelChatId,
-        (await bot.api.getMe()).id
-      );
+      const chat = await bot.api.getChat(chatId);
+      const botMember = await bot.api.getChatMember(chatId, (await bot.api.getMe()).id);
       const isAdmin = ["administrator", "creator"].includes(botMember.status);
 
       return {
         ok: true,
-        chatTitle: "title" in chat ? chat.title : settings.channelChatId,
+        chatTitle: "title" in chat ? chat.title : chatId,
         botIsAdmin: isAdmin,
         message: isAdmin
-          ? "Channel connection successful. Bot can verify members with getChatMember."
-          : "Channel found, but bot is NOT an administrator. Add the bot as channel admin, " +
+          ? `${label} channel connection successful. Bot can verify members with getChatMember.`
+          : `${label} channel found, but bot is NOT an administrator. Add the bot as channel admin, ` +
             "or users must forward a channel post to verify membership.",
       };
     } catch (error) {
       return reply.status(400).send({
-        error: "Failed to connect to channel. Check chat ID and bot permissions.",
+        error: `Failed to connect to ${label.toLowerCase()} channel. Check chat ID and bot permissions.`,
         details: error instanceof Error ? error.message : String(error),
       });
     }
