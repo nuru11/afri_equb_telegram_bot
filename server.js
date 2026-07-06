@@ -10,11 +10,12 @@ import dotenv from "dotenv";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import mysql from "mysql2/promise";
-import { Bot, GrammyError, InlineKeyboard, Keyboard, webhookCallback } from "grammy";
+import { Bot, GrammyError, InlineKeyboard, InputFile, Keyboard, webhookCallback } from "grammy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -571,7 +572,22 @@ function createBot() {
 // ---------------------------------------------------------------------------
 
 const RATE_LIMIT_MS = 40;
+const RECALL_WINDOW_MS = 48 * 60 * 60 * 1000;
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+const ALLOWED_PHOTO_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const PHOTO_EXT = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
+
+const uploadsDir = path.join(__dirname, "uploads", "broadcasts");
+fs.mkdirSync(uploadsDir, { recursive: true });
+
 const runningBroadcasts = new Set();
+const runningDeletes = new Set();
+const deleteProgress = new Map();
 
 function isBlockedError(error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -592,14 +608,145 @@ function mapBroadcast(row) {
     sent: row.sent,
     failed: row.failed,
     total: row.total,
+    recalledAt:
+      row.recalledAt instanceof Date
+        ? row.recalledAt.toISOString()
+        : row.recalledAt || null,
+    recalled: row.recalled ?? 0,
+    recallFailed: row.recallFailed ?? 0,
     createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
     updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
   };
 }
 
+function resolvePhotoSource(photoUrl) {
+  if (photoUrl.startsWith("/uploads/")) {
+    const localPath = path.join(__dirname, photoUrl.replace(/^\//, ""));
+    if (fs.existsSync(localPath)) {
+      return new InputFile(localPath);
+    }
+  }
+  return photoUrl;
+}
+
+async function flushBroadcastMessages(rows) {
+  if (!rows.length) return;
+  try {
+    const placeholders = rows.map(() => "(?, ?, ?)").join(", ");
+    const values = rows.flat();
+    await pool.query(
+      `INSERT INTO \`BroadcastMessage\` (\`broadcastId\`, \`telegramId\`, \`messageId\`) VALUES ${placeholders}`,
+      values
+    );
+  } catch (error) {
+    log("error", "Broadcast message tracking failed (run sql/migrate-broadcast-recall.sql for recall support)", {
+      count: rows.length,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function isWithinDeleteWindow(createdAt) {
+  const created = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  return Date.now() - created.getTime() < RECALL_WINDOW_MS;
+}
+
+async function countBroadcastMessages(broadcastId) {
+  try {
+    const [rows] = await pool.query(
+      "SELECT COUNT(*) AS `count` FROM `BroadcastMessage` WHERE `broadcastId` = ?",
+      [broadcastId]
+    );
+    return rows[0]?.count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function deleteBroadcastFromDb(broadcastId) {
+  try {
+    await pool.query("DELETE FROM `BroadcastMessage` WHERE `broadcastId` = ?", [broadcastId]);
+  } catch {
+    // table may not exist on older databases
+  }
+  await pool.query("DELETE FROM `Broadcast` WHERE `id` = ?", [broadcastId]);
+}
+
+async function runDeleteBroadcast(bot, broadcastId) {
+  if (runningDeletes.has(broadcastId)) return;
+  runningDeletes.add(broadcastId);
+
+  let cleared = 0;
+  let failed = 0;
+
+  try {
+    let rows = [];
+    try {
+      const [messageRows] = await pool.query(
+        "SELECT `telegramId`, `messageId` FROM `BroadcastMessage` WHERE `broadcastId` = ?",
+        [broadcastId]
+      );
+      rows = messageRows;
+    } catch {
+      rows = [];
+    }
+
+    deleteProgress.set(broadcastId, {
+      processed: 0,
+      total: rows.length,
+      cleared: 0,
+      failed: 0,
+    });
+
+    for (const row of rows) {
+      try {
+        await bot.api.deleteMessage(Number(row.telegramId), row.messageId);
+        cleared++;
+      } catch {
+        failed++;
+      }
+
+      const processed = cleared + failed;
+      deleteProgress.set(broadcastId, {
+        processed,
+        total: rows.length,
+        cleared,
+        failed,
+      });
+
+      await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
+    }
+
+    await deleteBroadcastFromDb(broadcastId);
+    log("info", "Broadcast delete completed", { broadcastId, cleared, failed });
+  } catch (error) {
+    log("error", "Broadcast delete failed", {
+      broadcastId,
+      cleared,
+      failed,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    try {
+      await deleteBroadcastFromDb(broadcastId);
+    } catch (dbError) {
+      log("error", "Broadcast admin cleanup failed", {
+        broadcastId,
+        error: dbError instanceof Error ? dbError.message : String(dbError),
+      });
+    }
+  } finally {
+    runningDeletes.delete(broadcastId);
+    deleteProgress.delete(broadcastId);
+  }
+}
+
 async function runBroadcast(bot, broadcastId) {
   if (runningBroadcasts.has(broadcastId)) return;
   runningBroadcasts.add(broadcastId);
+
+  const pendingMessages = [];
+  let sent = 0;
+  let failed = 0;
 
   try {
     const [users] = await pool.query(
@@ -621,20 +768,19 @@ async function runBroadcast(bot, broadcastId) {
     const broadcast = broadcastRows[0];
     if (!broadcast) return;
 
-    let sent = 0;
-    let failed = 0;
-
     for (const user of users) {
       const telegramId = Number(user.telegramId);
       try {
+        let result;
         if (broadcast.photoUrl) {
-          await bot.api.sendPhoto(telegramId, broadcast.photoUrl, {
+          result = await bot.api.sendPhoto(telegramId, resolvePhotoSource(broadcast.photoUrl), {
             caption: broadcast.content,
           });
         } else {
-          await bot.api.sendMessage(telegramId, broadcast.content);
+          result = await bot.api.sendMessage(telegramId, broadcast.content);
         }
         sent++;
+        pendingMessages.push([broadcastId, user.telegramId, result.message_id]);
       } catch (error) {
         failed++;
         if (isBlockedError(error)) {
@@ -649,9 +795,17 @@ async function runBroadcast(bot, broadcastId) {
           "UPDATE `Broadcast` SET `sent` = ?, `failed` = ? WHERE `id` = ?",
           [sent, failed, broadcastId]
         );
+        if (pendingMessages.length) {
+          await flushBroadcastMessages(pendingMessages);
+          pendingMessages.length = 0;
+        }
       }
 
       await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
+    }
+
+    if (pendingMessages.length) {
+      await flushBroadcastMessages(pendingMessages);
     }
 
     await pool.query(
@@ -660,11 +814,16 @@ async function runBroadcast(bot, broadcastId) {
     );
     log("info", "Broadcast completed", { broadcastId, sent, failed });
   } catch (error) {
-    await pool.query("UPDATE `Broadcast` SET `status` = 'FAILED' WHERE `id` = ?", [
+    const finalStatus = sent > 0 ? "COMPLETED" : "FAILED";
+    await pool.query(
+      "UPDATE `Broadcast` SET `sent` = ?, `failed` = ?, `status` = ? WHERE `id` = ?",
+      [sent, failed, finalStatus, broadcastId]
+    );
+    log("error", "Broadcast finished with errors", {
       broadcastId,
-    ]);
-    log("error", "Broadcast failed", {
-      broadcastId,
+      sent,
+      failed,
+      status: finalStatus,
       error: error instanceof Error ? error.message : String(error),
     });
   } finally {
@@ -703,6 +862,15 @@ async function requireAuth(request, reply) {
 async function createApiServer(bot) {
   const app = Fastify({ logger: false });
 
+  // Allow DELETE/POST with Content-Type: application/json but no body (admin fetch helper).
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    try {
+      done(null, body === "" || body === undefined ? {} : JSON.parse(body));
+    } catch (err) {
+      done(err, undefined);
+    }
+  });
+
   await app.register(cookie);
 
   // Allow http + https for the admin host (browsers send exact Origin).
@@ -725,6 +893,14 @@ async function createApiServer(bot) {
   await app.register(cors, {
     origin: corsOrigin,
     credentials: true,
+  });
+
+  await app.register(multipart, { limits: { fileSize: MAX_PHOTO_BYTES } });
+
+  await app.register(fastifyStatic, {
+    root: path.join(__dirname, "uploads"),
+    prefix: "/uploads/",
+    decorateReply: false,
   });
 
   // Separate admin subdomain needs SameSite=None + Secure (HTTPS on the API).
@@ -877,6 +1053,25 @@ async function createApiServer(bot) {
     }
     const broadcast = rows[0];
     const processed = broadcast.sent + broadcast.failed;
+    const deleteRunning = runningDeletes.has(id);
+    const progress = deleteProgress.get(id);
+    let deleteTotal = progress?.total ?? 0;
+    let deleteProcessed = progress?.processed ?? 0;
+    let deleteCleared = progress?.cleared ?? 0;
+    let deleteFailed = progress?.failed ?? 0;
+
+    if (!deleteRunning) {
+      try {
+        const [messageRows] = await pool.query(
+          "SELECT COUNT(*) AS `count` FROM `BroadcastMessage` WHERE `broadcastId` = ?",
+          [id]
+        );
+        deleteTotal = messageRows[0]?.count ?? 0;
+      } catch {
+        deleteTotal = broadcast.sent ?? 0;
+      }
+    }
+
     return {
       id: broadcast.id,
       status: broadcast.status,
@@ -886,7 +1081,37 @@ async function createApiServer(bot) {
       processed,
       progress: broadcast.total > 0 ? Math.round((processed / broadcast.total) * 100) : 0,
       message: `Sending to ${processed}/${broadcast.total} users...`,
+      deleteRunning,
+      deleteTotal,
+      deleteProcessed,
+      deleteCleared,
+      deleteFailed,
+      deleteProgress:
+        deleteTotal > 0 ? Math.round((deleteProcessed / deleteTotal) * 100) : 0,
     };
+  });
+
+  app.post("/api/uploads/photo", { preHandler: requireAuth }, async (request, reply) => {
+    const file = await request.file();
+    if (!file) {
+      return reply.status(400).send({ error: "No file uploaded" });
+    }
+
+    if (!ALLOWED_PHOTO_TYPES.has(file.mimetype)) {
+      return reply.status(400).send({ error: "Only JPEG, PNG, WebP, and GIF images are allowed" });
+    }
+
+    const ext = PHOTO_EXT[file.mimetype] || path.extname(file.filename) || ".jpg";
+    const filename = `${createId()}${ext}`;
+    const destPath = path.join(uploadsDir, filename);
+
+    const buffer = await file.toBuffer();
+    if (buffer.length > MAX_PHOTO_BYTES) {
+      return reply.status(400).send({ error: "Image must be 5 MB or smaller" });
+    }
+
+    await fs.promises.writeFile(destPath, buffer);
+    return { url: `/uploads/broadcasts/${filename}` };
   });
 
   app.post("/api/broadcasts", { preHandler: requireAuth }, async (request, reply) => {
@@ -918,6 +1143,42 @@ async function createApiServer(bot) {
     });
 
     return broadcast;
+  });
+
+  app.delete("/api/broadcasts/:id", { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params;
+    const [rows] = await pool.query("SELECT * FROM `Broadcast` WHERE `id` = ? LIMIT 1", [id]);
+    if (!rows.length) {
+      return reply.status(404).send({ error: "Broadcast not found" });
+    }
+
+    const broadcast = rows[0];
+    if (broadcast.status === "RUNNING" || runningBroadcasts.has(id)) {
+      return reply.status(409).send({ error: "Cannot delete a broadcast that is still sending" });
+    }
+    if (runningDeletes.has(id)) {
+      return reply.status(409).send({ error: "Delete is already in progress" });
+    }
+
+    const messageCount = await countBroadcastMessages(id);
+    const canClearUserChats =
+      (broadcast.status === "COMPLETED" || broadcast.status === "FAILED") &&
+      messageCount > 0 &&
+      isWithinDeleteWindow(broadcast.createdAt);
+
+    if (canClearUserChats) {
+      setImmediate(() => {
+        runDeleteBroadcast(bot, id).catch((err) => {
+          log("error", "Delete runner error", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      });
+      return { ok: true, deleting: true };
+    }
+
+    await deleteBroadcastFromDb(id);
+    return { ok: true, deleted: true, userChatsCleared: false };
   });
 
   app.get("/api/health", async (_request, reply) => {

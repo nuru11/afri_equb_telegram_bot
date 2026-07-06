@@ -148,6 +148,7 @@ For webhook mode, set `WEBHOOK_URL` to your app’s public HTTPS URL (no trailin
 
 - Health: `https://your-domain/api/health` → `{"ok":true,"database":"connected"}`
 - Admin: open `https://your-domain/` and sign in
+- Ensure the `uploads/broadcasts/` folder exists next to `server.js` and is writable (created automatically on first start; do not delete on deploy)
 
 ## Channel setup
 
@@ -169,7 +170,7 @@ Users must join the relevant channel for each result type. If the bot is not an 
 
 - **Settings** — release flags, remedial/entrance channels, result URLs, messages
 - **Analytics** — users and click counts
-- **Broadcast** — send a message (and optional photo URL) to all active users (in-process, no Redis)
+- **Broadcast** — send a message (optional image attachment) to all active users; delete from history or recall within 48 hours
 
 ## Scripts
 

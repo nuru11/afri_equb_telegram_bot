@@ -255,6 +255,56 @@ a {
   font-size: 0.9rem;
 }
 
+.broadcast-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.broadcast-history-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.broadcast-history-actions .btn {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.broadcast-thumb {
+  display: block;
+  max-width: 120px;
+  max-height: 80px;
+  object-fit: cover;
+  border-radius: 6px;
+  margin: 0.35rem 0;
+}
+
+.photo-preview {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.photo-preview img {
+  max-width: 200px;
+  max-height: 150px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid #e0e0e0;
+}
+
+.form-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: #666;
+}
+
 .broadcast-history li:last-child {
   border-bottom: none;
 }

@@ -46,9 +46,21 @@ CREATE TABLE IF NOT EXISTS `Broadcast` (
   `sent` INT NOT NULL DEFAULT 0,
   `failed` INT NOT NULL DEFAULT 0,
   `total` INT NOT NULL DEFAULT 0,
+  `recalledAt` DATETIME(3) NULL,
+  `recalled` INT NOT NULL DEFAULT 0,
+  `recallFailed` INT NOT NULL DEFAULT 0,
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `BroadcastMessage` (
+  `broadcastId` VARCHAR(30) NOT NULL,
+  `telegramId` BIGINT NOT NULL,
+  `messageId` INT NOT NULL,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`broadcastId`, `telegramId`),
+  KEY `BroadcastMessage_broadcastId_idx` (`broadcastId`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `Admin` (

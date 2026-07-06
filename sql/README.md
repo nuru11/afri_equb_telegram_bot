@@ -14,6 +14,8 @@ phpMyAdmin → select your database → **SQL** → run [`init.sql`](init.sql)
 
 **Existing deployments:** if you already ran an older `init.sql` with a single shared channel, run [`migrate-split-channels.sql`](migrate-split-channels.sql) once instead of re-running `init.sql`.
 
+For broadcast image upload + recall support, run [`migrate-broadcast-recall.sql`](migrate-broadcast-recall.sql) once on existing databases.
+
 ## 3. Create admin login
 
 Run [`create-admin.sql`](create-admin.sql) for default login:
